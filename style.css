@@ -1,0 +1,165 @@
+:root {
+  --bg: #0a0906;
+  --fg: #f4e7b6;
+  --dim: #8f8158;
+  --line: #e9c454;
+  --accent: #ffd23f;
+  --font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  height: 100dvh;   /* the space the browser actually shows (mobile toolbars excluded) */
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ---- stage ------------------------------------------------------------- */
+#stage { position: relative; flex: 1 1 auto; min-height: 0; }
+#gl { position: absolute; display: block; }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+body.has-image #overlay { cursor: crosshair; }
+body.near #overlay { cursor: grab; }
+body.grabbing #overlay { cursor: grabbing; }
+
+#empty {
+  position: absolute; inset: 0; width: 100%;
+  border: 0; background: transparent;
+  color: var(--dim);
+  font: inherit; letter-spacing: 0.06em;
+  cursor: pointer;
+}
+#empty:hover, #empty:focus-visible { color: var(--fg); outline: none; }
+body.dragging #empty { color: var(--accent); }
+
+/* ---- panel ------------------------------------------------------------- */
+#panel {
+  flex: 0 0 auto;
+  max-height: 46vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  padding-block: 20px calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+#panel[hidden] { display: none; }
+
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
+
+/* actions are the only bordered elements, so they read as buttons; every setting is a
+   slider cell (line + knob, label left, value right) at the same type size */
+button {
+  font: inherit; color: var(--fg);
+  background: transparent; border: 1px solid var(--dim);
+  padding: 3px 10px; cursor: pointer; letter-spacing: 0.03em;
+}
+button:hover, button:focus-visible { border-color: var(--line); color: var(--accent); outline: none; }
+
+
+/* slider cells, after the reference: a line with a round knob, label left, value right */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px 26px;
+}
+.cell { display: grid; grid-template-columns: 1fr auto; gap: 0 10px; min-width: 0; }
+.cell[hidden] { display: none; }
+/* controls that don't apply to the current mode stay in place, greyed out */
+.off { opacity: 0.3; }
+.off, .off * { cursor: default; }
+button:disabled { pointer-events: none; }
+input[type="range"]:disabled { cursor: default; }
+.cell input { grid-column: 1 / -1; }
+.cell .name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell .val { color: var(--fg); font-variant-numeric: tabular-nums; }
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 18px; margin: 0;
+  background: transparent; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track { height: 1px; background: var(--line); }
+input[type="range"]::-moz-range-track { height: 1px; background: var(--line); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 13px; height: 13px; margin-top: -6px;
+  border-radius: 50%; background: var(--line); border: 0;
+}
+input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 50%; background: var(--line); border: 0; }
+input[type="range"]:focus-visible { outline: 1px dashed var(--dim); outline-offset: 2px; }
+
+.actions .btns { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+/* mode: a snapping two-state slider; its ends are named, the active one lit */
+.cell.mode .end { color: var(--dim); cursor: pointer; }
+.cell.mode .end:last-child { text-align: right; }
+.cell.mode .end.on { color: var(--fg); }
+.cell.mode .end:hover { color: var(--fg); }
+
+#info-btn { margin-left: auto; }
+
+
+/* ---- info -------------------------------------------------------------- */
+/* the backdrop dims everything, panel included; only the info / close button stays lit */
+#info {
+  position: fixed; inset: 0; z-index: 10;
+  background: rgba(10, 9, 6, 0.85);
+}
+#info[hidden] { display: none; }
+#info-btn { position: relative; z-index: 11; }
+#info-btn[aria-expanded="true"] { border-color: var(--line); color: var(--accent); background: var(--bg); }
+/* placed by script: over the image area on wide screens (landscape, two columns);
+   on phones from the top margin down to just above the close button */
+#info .sheet {
+  position: absolute;
+  display: flex;
+  background: var(--bg);
+}
+/* the frame holds the text and is what scrolls, so text never crosses the border */
+#info .frame {
+  flex: 1; min-height: 0;
+  border: 1px solid var(--line);
+  padding: 22px 26px;
+  line-height: 1.6;
+  overflow-y: auto;
+  columns: 2; column-gap: 40px;
+}
+#info p { margin: 0 0 12px; break-inside: avoid; }
+#info b { color: var(--accent); font-weight: 600; }
+#info dl { display: grid; grid-template-columns: 5.5em 1fr; gap: 2px 12px; margin: 0 0 12px; break-inside: avoid; }
+#info dt { color: var(--accent); font-weight: 600; }
+#info dd { margin: 0; }
+/* a band of slashes across the full width, between the text and the credit */
+#info .hatch {
+  column-span: all; margin: 3.2rem 0;   /* two blank lines above and below */
+  white-space: pre; overflow: hidden;
+  color: var(--fg); line-height: 1.35; font-size: 1.4em; letter-spacing: 0;
+}
+#info .credit { margin: 0; column-span: all; }
+#info a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+#info a:hover { color: var(--fg); }
+
+@media (max-width: 720px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* phones: buttons in an even 3 × 2 grid (open undo reset / dice save info) */
+@media (max-width: 560px) {
+  #panel { max-height: 60dvh; }
+  .actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .actions .btns { display: contents; }
+  .actions button { width: 100%; padding-inline: 4px; }
+  #info-btn { margin-left: 0; }
+  #info .frame { columns: auto; padding: 16px; }
+  #info .hatch { font-size: 1.2em; }
+  #info .credit { column-span: none; }
+}

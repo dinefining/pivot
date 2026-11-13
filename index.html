@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pivot</title>
+  <meta name="description" content="Pin a point, swing a handle, and the image turns around it like a wheel of rings. A Maybe Machine by Ravi Popat.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#0a0906">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Pivot">
+  <meta property="og:description" content="Pin a point, swing a handle, and the image turns around it like a wheel of rings. A Maybe Machine by Ravi Popat.">
+  <meta property="og:url" content="https://dinefining.github.io/pivot/">
+  <meta property="og:image" content="https://dinefining.github.io/pivot/og-image.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Pivot: a photo turned into rings around a pin, with the control panel below">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Pivot">
+  <meta name="twitter:description" content="Pin a point, swing a handle, and the image turns around it like a wheel of rings.">
+  <meta name="twitter:image" content="https://dinefining.github.io/pivot/og-image.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="overlay"></canvas>
+    <button id="empty" type="button">drop an image</button>
+  </main>
+  <input id="file" type="file" accept="image/*" hidden>
+
+  <section id="panel" hidden aria-label="controls">
+    <div class="grid" id="sliders"></div>
+    <div class="row actions">
+      <div class="btns" id="actions"></div>
+      <button type="button" id="info-btn" aria-haspopup="dialog">info</button>
+    </div>
+  </section>
+
+  <div id="info" role="dialog" aria-modal="true" aria-label="About Pivot" hidden>
+    <div class="sheet">
+      <div class="frame">
+      <p>Pin a point, swing the handle, and the image turns around it like a wheel.</p>
+      <p>Drag to place a pin and handle, then drag the handle to turn. A new line locks the current turn in, so turns stack.</p>
+      <p><b>Rings</b> cut the image into bands around the pin, each turning by its own amount: the further from the pin, the more it turns. <b>Turn</b> rotates the whole area inside the reach. Controls that don't apply to a mode are greyed out.</p>
+      <p><b>Gears</b> counter-turns every other band: at 0% all turn the same way, at 50% every other band stays still, at 100% they turn the opposite way.</p>
+      <p><b>Wedge taper</b>: with a wedge under 360°, 0% cuts the effect off cleanly at the wedge's edges. Turning it up widens a soft feather across each edge.</p>
+      <dl>
+        <dt>Shift</dt><dd>Snap to 15° while dragging.</dd>
+        <dt>← →</dt><dd>Nudge by 1° (with Shift, 15°).</dd>
+        <dt>M</dt><dd>Switch between rings and turn.</dd>
+        <dt>D Z R S</dt><dd>Dice, undo, reset, save.</dd>
+      </dl>
+      <div class="hatch" aria-hidden="true"></div>
+      <p class="credit">A <a href="https://maybemachines.com" target="_blank" rel="noopener">Maybe Machine</a> by <a href="https://ravipopat.info" target="_blank" rel="noopener">Ravi Popat</a>.</p>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <script>window.PIVOT_SAMPLE = "sample.jpg";   // the image the app opens with</script>
+  <script src="main.js"></script>
+</body>
+</html>
