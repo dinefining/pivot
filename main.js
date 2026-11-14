@@ -112,25 +112,40 @@
     return smoothstep(1.0, 3.0, uFold) * w * fall(d) * min(1.0, abs(uAngle) / (PI / 4.0));
   }
 
+  // mirror fold into n segments over span: a triangle wave with sharp creases at the mirror
+  // lines; soft edges rounds those creases toward a cosine wave (same range, no corners).
+  // When n isn't whole, the piece left over where the circle closes (behind the handle)
+  // becomes a smaller mirror segment of its own, so it closes without a seam and grows
+  // into a full segment as n rises.
+  float foldN(float src, float n, float span) {
+    float seg = span / n;
+    float x = src + span * 0.5;
+    float k = floor(x / seg), m = x - k * seg;
+    float w = seg;
+    if (k * seg < span && (k + 1.0) * seg > span) w = max(span - k * seg, 1e-4);
+    float tri = w * 0.5 - abs(m - w * 0.5);
+    float smoothFold = w * 0.25 * (1.0 - cos(TAU * min(m, w) / w));
+    return mix(max(tri, -seg), smoothFold, uSoft) - seg * 0.25;
+  }
+
   // the picture at one turn angle th, for a pixel at distance d and wedge-relative angle rel;
   // w is how much of the effect reaches this pixel (wedge feather × nothing else)
   vec4 ringAt(float th, float d, float rel, float w, bool partial) {
     float src = wrapPi(rel - th);
     if (uFold > 1.0) {                                      // kaleidoscope
       // below 2× the fold uses 2 segments while it eases in; above 2× the count keeps rising
-      float n = max(uFold, 2.0);
       float span = partial ? uWedge : TAU;
-      float seg = span / n;
-      float m = mod(src + span * 0.5, seg);
-      // mirror fold: a triangle wave with sharp creases at the mirror lines; soft edges
-      // rounds those creases toward a cosine wave (same range, no corners)
-      float tri = seg * 0.5 - abs(m - seg * 0.5);
-      float smoothFold = seg * 0.25 * (1.0 - cos(TAU * m / seg));
-      float folded = mix(tri, smoothFold, uSoft) - seg * 0.25;
+      float folded = foldN(src, max(uFold, 2.0), span);
       // fades with the wedge feather and the reach like the turn itself, and fades in over
       // the first 45° of turning, so an unturned line changes nothing
-      // blend along the shorter way round, so a small amount is a small change
-      src += foldAmount(d, w) * wrapPi(folded - src);
+      // bend from the plain direction toward the folded one. Blending the two angles would
+      // flip to the other way round at one angle and leave a seam there; blending them as
+      // directions (vectors) bends smoothly everywhere
+      float f = foldAmount(d, w);
+      if (f > 0.0) {
+        vec2 dir = mix(vec2(cos(src), sin(src)), vec2(cos(folded), sin(folded)), f);
+        src = atan(dir.y, dir.x);
+      }
     }
     return fetch(uPivot + unpolar(d, src + uPhi0));
   }
