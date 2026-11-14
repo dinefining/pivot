@@ -10,9 +10,16 @@
   const MAX_SIDE = 2560;     // image long side kept on the GPU
   const MAX_UNDO = 12;
   const GRAB_R = 22;         // css px: press this close to the handle to turn it
-  const HANDLE_R = 8;
+  const HANDLE_R = 10;                 // handle dot radius (css px)
+  const MARK_W = 1.5;                  // stroke of the handle line and pin cross
   const SNAP = Math.PI / 12;
-  const COL = { fg: "#f4e7b6", line: "#e9c454", accent: "#ffd23f", shade: "rgba(10,9,6,0.6)", guide: "rgba(233,196,84,0.55)" };
+  // canvas colours follow the CSS theme tokens (read again whenever the theme changes)
+  const COL = { line: "#e9c454", accent: "#ffd23f", shade: "rgba(10,9,6,0.6)", bgRGB: [0.04, 0.035, 0.024] };
+  function readColours() {
+    const cs = getComputedStyle(document.documentElement), v = (n) => cs.getPropertyValue(n).trim();
+    COL.line = v("--line"); COL.accent = v("--accent"); COL.shade = v("--shade");
+    const bg = v("--bg"); COL.bgRGB = [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16) / 255);
+  }
 
   const MODES = ["rings", "turn"];
 
@@ -27,8 +34,12 @@
   let pivot = null, handle = null;     // image px; handle only while drawing the line
   let angle = 0, refR = 1, phi0 = 0;
   let drag = null, free = 0, lastRaw = 0;
-  let turns = 0;
-  let view = { s: 1, x: 0, y: 0, w: 0, h: 0 };
+  let turns = 0, comparing = false;
+  // view: where the image sits on the stage (css px). s = css px per image px; fit = the s
+  // that shows the whole image; zoom = s / fit (1 = whole image)
+  let view = { s: 1, x: 0, y: 0, w: 0, h: 0, sw: 1, sh: 1, fit: 1 };
+  let zoom = 1;
+  const PAD = 16, MAX_PX = 8;          // margin around the image; max zoom: 8 css px per image px
 
   // ---- dom ------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -54,7 +65,9 @@
   uniform sampler2D uBase;
   uniform vec2 uSize, uPivot;
   uniform float uAngle, uRefR, uSlice, uPhi0, uWedge, uTaper, uSoft, uFold, uReach, uGears;
-  uniform int uMode, uActive;
+  uniform int uMode, uActive, uClip;
+  uniform vec4 uMap;                 // image uv = vUv * uMap.zw + uMap.xy (zoom and pan)
+  uniform vec3 uBg;                  // page background, shown around the image
   const float PI = 3.14159265358979, TAU = 6.28318530717959;
 
   float wrapPi(float a) { return a - TAU * floor((a + PI) / TAU); }
@@ -164,9 +177,11 @@
   }
 
   void main() {
-    gX = dFdx(vUv); gY = dFdy(vUv);
-    vec2 p = vUv * uSize;
-    if (uActive == 0) { o = vec4(texture(uBase, vUv).rgb, 1.0); return; }
+    vec2 uv = vUv * uMap.zw + uMap.xy;
+    gX = dFdx(uv); gY = dFdy(uv);
+    if (uClip == 1 && (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0)) { o = vec4(uBg, 1.0); return; }
+    vec2 p = uv * uSize;
+    if (uActive == 0) { o = vec4(textureGrad(uBase, uv, gX, gY).rgb, 1.0); return; }
     o = vec4((uMode == 1 ? turnAll(p) : rings(p)).rgb, 1.0);
   }`;
 
@@ -209,7 +224,7 @@
   }
   const fbo = gl.createFramebuffer();
 
-  let texOrig = null, texBase = null, undoStack = [];
+  let texOrig = null, texBase = null, undoStack = [], redoStack = [];
 
   // ---- drawing --------------------------------------------------------------
   function setUniforms(active) {
@@ -237,12 +252,21 @@
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.uniform1i(U.uFlip, flip ? 1 : 0);
     setUniforms(active);
+    // the screen shows the stage, with the image placed by the view (zoom, pan); anything
+    // rendered into a texture is the whole image at its own size
+    if (target) { gl.uniform4f(U.uMap, 0, 0, 1, 1); gl.uniform1i(U.uClip, 0); }
+    else {
+      gl.uniform4f(U.uMap, -view.x / view.w, -view.y / view.h, view.sw / view.w, view.sh / view.h);
+      gl.uniform1i(U.uClip, 1); gl.uniform3f(U.uBg, ...COL.bgRGB);
+    }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   function renderScreen() {
     if (!W) return;
+    // compare: show the original while held, with no marks
+    if (comparing) { drawTo(null, glc.width, glc.height, false, texOrig, false); octx.clearRect(0, 0, ov.width, ov.height); return; }
     // a pin whose line is still being drawn has no length or direction yet: show the image as is
     drawTo(null, glc.width, glc.height, false, texBase, !!pivot && drag !== "line");
     drawOverlay();
@@ -253,11 +277,32 @@
     const dpr = window.devicePixelRatio || 1;
     ov.width = Math.round(r.width * dpr); ov.height = Math.round(r.height * dpr);
     if (!W) return;
-    const s = Math.min((r.width - 32) / W, (r.height - 32) / H);
-    view.s = s; view.w = Math.round(W * s); view.h = Math.round(H * s);
-    view.x = Math.round((r.width - view.w) / 2); view.y = Math.round((r.height - view.h) / 2);
-    Object.assign(glc.style, { left: view.x + "px", top: view.y + "px", width: view.w + "px", height: view.h + "px" });
-    glc.width = Math.round(view.w * dpr); glc.height = Math.round(view.h * dpr);
+    // keep whatever is in the middle of the stage in the middle when the stage changes size
+    const c = view.w ? { x: (view.sw / 2 - view.x) / view.s, y: (view.sh / 2 - view.y) / view.s } : null;
+    view.sw = r.width; view.sh = r.height;
+    view.fit = Math.min((r.width - 2 * PAD) / W, (r.height - 2 * PAD) / H);
+    view.s = view.fit * zoom; view.w = W * view.s; view.h = H * view.s;
+    if (c) { view.x = r.width / 2 - c.x * view.s; view.y = r.height / 2 - c.y * view.s; }
+    clampView();
+    Object.assign(glc.style, { left: "0px", top: "0px", width: r.width + "px", height: r.height + "px" });
+    glc.width = Math.round(r.width * dpr); glc.height = Math.round(r.height * dpr);
+  }
+  // an image smaller than the stage sits in the middle; a bigger one can be moved until
+  // its edge reaches the margin, never further
+  function clampView() {
+    const lim = (pos, size, room) => size <= room - 2 * PAD ? Math.round((room - size) / 2)
+      : Math.min(PAD, Math.max(room - PAD - size, pos));
+    view.x = lim(view.x, view.w, view.sw); view.y = lim(view.y, view.h, view.sh);
+  }
+  // zoom to z, keeping the image point under stage point (sx, sy) where it is
+  function zoomTo(z, sx = view.sw / 2, sy = view.sh / 2, anchor) {
+    if (!W) return;
+    const a = anchor || { x: (sx - view.x) / view.s, y: (sy - view.y) / view.s };
+    zoom = Math.max(1, Math.min(Math.max(1, MAX_PX / view.fit), z));
+    if (Math.abs(zoom - 1) < 0.01) zoom = 1;
+    view.s = view.fit * zoom; view.w = W * view.s; view.h = H * view.s;
+    view.x = sx - a.x * view.s; view.y = sy - a.y * view.s;
+    clampView(); schedule();
   }
 
   const toImg = (cx, cy) => {
@@ -279,23 +324,18 @@
     octx.clearRect(0, 0, ov.width, ov.height);
     if (!pivot) return;
     const [px, py] = toScr(pivot), [hx, hy] = handleScr();
-    // the parts you grab (handle line, pin cross, dot): 1.5px yellow over a soft dark
-    // outline, so they read on bright and dark parts of a photo alike
-    const strokePath = (path) => {
-      for (const [c, w] of [[COL.shade, 3.5], [COL.line, 1.5]]) {
-        octx.strokeStyle = c; octx.lineWidth = w; octx.beginPath(); path(); octx.stroke();
-      }
-    };
+    // the parts you grab (handle line, pin cross, dot): in the accent colour, no outline,
+    // a touch heavier than the 1px guides so they read over a busy photo
+    const strokePath = (path) => { octx.strokeStyle = COL.line; octx.lineWidth = MARK_W; octx.beginPath(); path(); octx.stroke(); };
     // the reach circle: a thin 1px guide, no outline
     const R = P.reach * refR * view.s;
     const guide = (path) => { octx.strokeStyle = COL.line; octx.lineWidth = 1; octx.beginPath(); path(); octx.stroke(); };
     if (isFinite(P.reach) && drag !== "line") guide(() => octx.arc(px, py, R, 0, Math.PI * 2));
     strokePath(() => {                                              // line and pin cross
       octx.moveTo(px, py); octx.lineTo(hx, hy);
-      octx.moveTo(px - 7, py - 7); octx.lineTo(px + 7, py + 7);
-      octx.moveTo(px + 7, py - 7); octx.lineTo(px - 7, py + 7);
+      octx.moveTo(px - 8, py - 8); octx.lineTo(px + 8, py + 8);
+      octx.moveTo(px + 8, py - 8); octx.lineTo(px - 8, py + 8);
     });
-    octx.fillStyle = COL.shade; octx.beginPath(); octx.arc(hx, hy, HANDLE_R + 1, 0, 7); octx.fill();
     octx.fillStyle = COL.accent; octx.beginPath(); octx.arc(hx, hy, HANDLE_R, 0, 7); octx.fill();
   }
 
@@ -309,9 +349,14 @@
   }
 
   // ---- edits ----------------------------------------------------------------
+  // history: every image state is a texture. Undo moves the current state onto the redo
+  // stack; any new change (a locked-in turn, dice, reset, a new image) clears redo.
+  const inUse = (t) => t === texOrig || t === texBase || undoStack.some((u) => u.tex === t) || redoStack.some((u) => u.tex === t);
+  function drop(list) { for (const u of list.splice(0)) if (!inUse(u.tex)) gl.deleteTexture(u.tex); }
   function pushUndo() {
+    drop(redoStack);
     undoStack.push({ tex: texBase, turns });
-    if (undoStack.length > MAX_UNDO) { const u = undoStack.shift(); if (u.tex !== texOrig) gl.deleteTexture(u.tex); }
+    if (undoStack.length > MAX_UNDO) { const u = undoStack.shift(); if (!inUse(u.tex)) gl.deleteTexture(u.tex); }
   }
 
   function commit() {
@@ -327,11 +372,24 @@
 
   // switching mode locks the current turn into the image first, so nothing already done
   // changes; the pin and handle stay where they are, ready to turn in the new mode
+  // If you switch away and come straight back without turning in the other mode, the
+  // lock-in is taken back and the turn is live again, so its sliders still act on it.
+  let parked = null;
   function setMode(m) {
     if (m === P.mode) return;
+    const pk = parked; parked = null;
+    if (pk && pk.mode === m && pivot === pk.pivot && angle === 0 && texBase === pk.after &&
+        undoStack.length && undoStack[undoStack.length - 1].tex === pk.before) {
+      undoStack.pop(); texBase = pk.before; turns = pk.turns;
+      if (!inUse(pk.after)) gl.deleteTexture(pk.after);
+      refR = pk.refR; phi0 = pk.phi0; angle = pk.angle; free = 0;
+      P.mode = m; afterChange(); return;
+    }
     // the handle stays exactly where it is: its current direction becomes the new 0°
     const keep = pivot ? { pivot, refR, phi0: phi0 + angle } : null;
+    const live = pivot && angle !== 0 ? { mode: P.mode, pivot, refR, phi0, angle, before: texBase, turns } : null;
     commit();
+    if (live) parked = { ...live, after: texBase };
     if (keep) { pivot = keep.pivot; refR = keep.refR; phi0 = keep.phi0; angle = 0; free = 0; }
     P.mode = m;
     afterChange();
@@ -346,18 +404,32 @@
   function setAngle(a) { angle = a; schedule(); }
 
   function undo() {
-    if (pivot && angle !== 0) { pivot = null; angle = 0; diceLive = false; schedule(); return; }
-    pivot = null; angle = 0;
+    if (pivot && angle !== 0) commit();      // lock the live turn in first, so redo can bring it back
+    pivot = null; angle = 0; diceLive = false;
     const prev = undoStack.pop();
-    if (prev) { if (texBase !== texOrig && !undoStack.some((u) => u.tex === texBase)) gl.deleteTexture(texBase); texBase = prev.tex; turns = prev.turns; }
+    if (prev) {
+      redoStack.push({ tex: texBase, turns });
+      if (redoStack.length > MAX_UNDO) { const u = redoStack.shift(); if (!inUse(u.tex)) gl.deleteTexture(u.tex); }
+      texBase = prev.tex; turns = prev.turns;
+    }
+    schedule();
+  }
+
+  function redo() {
+    const next = redoStack.pop();
+    if (!next) return;
+    pivot = null; angle = 0; diceLive = false;   // a turn still being made is dropped
+    undoStack.push({ tex: texBase, turns });
+    texBase = next.tex; turns = next.turns;
     schedule();
   }
 
   function reset() {
     pivot = null; angle = 0;
-    for (const u of undoStack) if (u.tex !== texOrig) gl.deleteTexture(u.tex);
-    if (texBase !== texOrig) gl.deleteTexture(texBase);
-    undoStack = []; texBase = texOrig; turns = 0;
+    const old = texBase;
+    texBase = texOrig; turns = 0;
+    drop(undoStack); drop(redoStack);
+    if (!inUse(old)) gl.deleteTexture(old);
     schedule();
   }
 
@@ -426,11 +498,17 @@
   const ACTIONS = [
     { id: "open-btn", text: "open", run: () => fileInput.click() },
     { id: "undo-btn", text: "undo", run: undo },
+    { id: "redo-btn", text: "redo", run: redo },
     { id: "reset-btn", text: "reset", run: reset },
     { id: "dice-btn", text: "dice", run: dice },
+    { id: "compare-btn", text: "compare", hold: true },
     { id: "save-btn", text: "save", run: savePNG },
   ];
 
+  // JetBrains Mono's ∞ outline (font units: 1000 per em, baseline at 0, y up)
+  // cropped tight to the glyph, then sized up ~1.5× (in CSS) so it reads as big as the digits
+  const INF_SVG = '<svg class="inf" viewBox="35 -505 530 345" aria-label="infinity" role="img">' +
+    '<path transform="scale(1,-1)" fill="currentColor" d="M166 160Q107 160 71.0 197.0Q35 234 35 295V370Q35 431 73.0 468.0Q111 505 172 505Q274 505 310 406H313Q318 428 332.5 450.5Q347 473 372.5 489.0Q398 505 434 505Q493 505 529.0 468.0Q565 431 565 370V295Q565 234 527.5 197.0Q490 160 428 160Q326 160 290 259H287Q283 238 268.0 215.0Q253 192 228.0 176.0Q203 160 166 160ZM175 220Q204 220 222.0 231.5Q240 243 250.5 259.0Q261 275 266.0 289.0Q271 303 272 309L241 393Q219 445 175 445Q144 445 124.5 424.5Q105 404 105 370V295Q105 261 124.5 240.5Q144 220 175 220ZM425 220Q457 220 476.0 240.5Q495 261 495 295V370Q495 404 476.0 424.5Q457 445 425 445Q397 445 378.5 433.5Q360 422 349.5 406.0Q339 390 334.0 376.0Q329 362 328 356L359 272Q381 220 425 220Z"/></svg>';
   const sliderEls = {}, actionEls = {};
 
   // mode: a two-state slider that snaps to either end. No label: the two ends are
@@ -457,9 +535,33 @@
   }
   for (const a of ACTIONS) {
     const b = document.createElement("button"); b.type = "button"; b.id = a.id; b.textContent = a.text;
-    b.addEventListener("click", () => { if (W || a.id === "open-btn") a.run(); });
+    if (a.hold) {        // compare: press and hold to see the original, let go to come back
+      b.addEventListener("pointerdown", (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); setCompare(true); });
+      for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(ev, () => setCompare(false));
+      b.addEventListener("contextmenu", (e) => e.preventDefault());
+    } else b.addEventListener("click", () => { if (W || a.id === "open-btn") a.run(); });
     $("actions").appendChild(b); actionEls[a.id] = b;
   }
+  $("actions").insertBefore($("theme-btn"), actionEls["save-btn"]);   // … compare, light/dark, save
+
+  function setCompare(v) {
+    if (comparing === v || !W) return;
+    comparing = v; actionEls["compare-btn"].setAttribute("aria-pressed", String(v)); schedule();
+  }
+
+  // dark / light background; remembered on this device
+  const themeBtn = $("theme-btn");
+  function setTheme(t) {
+    document.documentElement.dataset.theme = t;
+    themeBtn.textContent = t === "dark" ? "light" : "dark";        // the button names where it goes
+    document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#0a0906" : "#f6f4ee";
+    try { localStorage.setItem("pivot.theme", t); } catch (e) {}
+    readColours(); schedule();
+  }
+  themeBtn.addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
+  let savedTheme = "dark";
+  try { savedTheme = localStorage.getItem("pivot.theme") || "dark"; } catch (e) {}
+  setTheme(savedTheme);
 
   function afterChange() {
     syncUI(); schedule();
@@ -474,7 +576,10 @@
       c.classList.toggle("off", offC);
       c.querySelector("input").disabled = offC;
       c.querySelector("input").value = s.get ? s.get() : P[s.key];
-      c.querySelector(".val").textContent = s.fmt(P[s.key]);
+      const txt = s.fmt(P[s.key]), val = c.querySelector(".val");
+      // Google Fonts' JetBrains Mono leaves out ∞, so browsers draw it in a fallback font at
+      // the wrong size. Draw JetBrains Mono's own ∞ instead, in the text colour.
+      if (txt === "∞") val.innerHTML = INF_SVG; else val.textContent = txt;
     }
     for (const a of ACTIONS) if (a.toggle) actionEls[a.id].setAttribute("aria-pressed", String(a.toggle()));
     requestAnimationFrame(() => { fit(); schedule(); }); // the panel may have changed height
@@ -491,12 +596,13 @@
     g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
     g.imageSmoothingQuality = "high";
     g.drawImage(im, 0, 0, W, H);
-    for (const u of undoStack) if (u.tex !== texOrig) gl.deleteTexture(u.tex);
-    if (texBase && texBase !== texOrig) gl.deleteTexture(texBase);
-    if (texOrig) gl.deleteTexture(texOrig);
+    // a new image starts a fresh history: free every texture from the old one
+    const old = new Set([texOrig, texBase, ...undoStack.map((u) => u.tex), ...redoStack.map((u) => u.tex)]);
+    for (const t of old) if (t) gl.deleteTexture(t);
     gl.activeTexture(gl.TEXTURE0);
-    texOrig = makeTex(W, H, c); texBase = texOrig; undoStack = [];
+    texOrig = makeTex(W, H, c); texBase = texOrig; undoStack = []; redoStack = [];
     turns = 0; pivot = null; angle = 0;
+    zoom = 1; view.w = 0;                  // a new image starts showing whole
     document.body.classList.add("has-image");
     emptyBtn.hidden = true;
     panel.hidden = false;
@@ -526,16 +632,31 @@
     return Math.hypot(cx - r.left - h[0], cy - r.top - h[1]) <= GRAB_R;
   }
 
+  // pointers on the stage: one draws and turns; Space + drag (or the middle button) moves
+  // the view; two fingers pinch to zoom and move it
+  const pointers = new Map();
+  let spaceDown = false, panFrom = null, pinch = null, before = null;
+  const stageXY = (e) => { const r = stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+
   ov.addEventListener("pointerdown", (e) => {
-    if (!W || e.button !== 0) return;
+    if (!W || (e.button !== 0 && e.button !== 1)) return;
     ov.setPointerCapture(e.pointerId);
-    if (nearHandle(e.clientX, e.clientY)) {
+    pointers.set(e.pointerId, stageXY(e));
+    if (pointers.size === 2 && e.pointerType === "touch") { startPinch(); return; }
+    if (pointers.size > 1 || drag) return;
+    if (spaceDown || e.button === 1) {
+      e.preventDefault();
+      drag = "pan"; panFrom = { ...stageXY(e), x0: view.x, y0: view.y };
+      document.body.classList.add("panning");
+    } else if (nearHandle(e.clientX, e.clientY)) {
       drag = "turn";
       const p = toImg(e.clientX, e.clientY);
       lastRaw = Math.atan2(p.y - pivot.y, p.x - pivot.x);
       free = angle;
       document.body.classList.add("grabbing");
     } else {
+      // remember the state, so a second finger arriving (a pinch, not a new line) can put it back
+      before = { texBase, turns, pivot, angle, phi0, refR, diceLive };
       commit();
       pivot = toImg(e.clientX, e.clientY); handle = { ...pivot };
       drag = "line";
@@ -543,8 +664,37 @@
     schedule();
   });
 
+  function startPinch() {
+    if (drag === "line" && before) {                // the first finger wasn't drawing after all
+      if (texBase !== before.texBase) {
+        const t = texBase; undoStack.pop(); texBase = before.texBase;
+        if (!inUse(t)) gl.deleteTexture(t);
+      }
+      ({ turns, pivot, angle, phi0, refR, diceLive } = before);
+      handle = null;
+    }
+    document.body.classList.remove("grabbing");
+    const [a, b] = [...pointers.values()];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom,
+              anchor: { x: (mid.x - view.x) / view.s, y: (mid.y - view.y) / view.s } };
+    drag = "pinch"; schedule();
+  }
+
   ov.addEventListener("pointermove", (e) => {
     if (!W) return;
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, stageXY(e));
+    if (drag === "pinch") {
+      if (pointers.size < 2) return;
+      const [a, b] = [...pointers.values()];
+      zoomTo(pinch.z * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d, (a.x + b.x) / 2, (a.y + b.y) / 2, pinch.anchor);
+      return;
+    }
+    if (drag === "pan") {
+      const p = stageXY(e);
+      view.x = panFrom.x0 + p.x - panFrom.x; view.y = panFrom.y0 + p.y - panFrom.y;
+      clampView(); schedule(); return;
+    }
     if (!drag) { document.body.classList.toggle("near", nearHandle(e.clientX, e.clientY)); return; }
     const p = toImg(e.clientX, e.clientY);
     if (drag === "line") { handle = p; schedule(); return; }
@@ -556,8 +706,8 @@
 
   function endDrag() {
     if (!drag) return;
-    const was = drag; drag = null;
-    document.body.classList.remove("grabbing");
+    const was = drag; drag = null; before = null;
+    document.body.classList.remove("grabbing", "panning");
     if (was === "line") {
       const [px, py] = toScr(pivot), [hx, hy] = toScr(handle);
       if (Math.hypot(hx - px, hy - py) < GRAB_R * 1.5) pivot = null; // a click, not a line
@@ -566,21 +716,38 @@
     }
     schedule();
   }
-  ov.addEventListener("pointerup", endDrag);
-  ov.addEventListener("pointercancel", endDrag);
+  function pointerUp(e) {
+    pointers.delete(e.pointerId);
+    if (drag === "pinch") { if (pointers.size === 0) drag = null; return; }   // lift both fingers to finish
+    endDrag();
+  }
+  ov.addEventListener("pointerup", pointerUp);
+  ov.addEventListener("pointercancel", pointerUp);
+  ov.addEventListener("auxclick", (e) => e.preventDefault());
+  // scroll wheel / trackpad pinch: zoom toward the pointer
   ov.addEventListener("wheel", (e) => {
-    if (!W || P.mode === "turn") return;
+    if (!W) return;
     e.preventDefault();
-    P.slice = Math.max(1, Math.min(240, P.slice + (e.deltaY > 0 ? -1 : 1) * Math.max(1, Math.round(P.slice * 0.1))));
-    afterChange();
+    const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+    const p = stageXY(e);
+    zoomTo(zoom * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.002)), p.x, p.y);
   }, { passive: false });
 
   // ---- keys -----------------------------------------------------------------
   const cycle = (arr, v) => arr[(arr.indexOf(v) + 1) % arr.length];
+  addEventListener("keyup", (e) => {
+    if (e.key.toLowerCase() === "c") setCompare(false);
+    if (e.key === " ") { spaceDown = false; document.body.classList.remove("pan"); }
+  });
+  addEventListener("blur", () => { setCompare(false); spaceDown = false; document.body.classList.remove("pan"); });
   addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "Escape" && !info.hidden) { closeInfo(); return; }
-    if (!info.hidden || !W || drag) return;
+    if (!info.hidden || !W) return;
+    if (e.key === " " && !(e.target instanceof HTMLInputElement)) {   // hold Space to move the view
+      e.preventDefault(); spaceDown = true; document.body.classList.add("pan"); return;
+    }
+    if (drag) return;
     if (e.target instanceof HTMLInputElement && e.key.startsWith("Arrow")) return;
     switch (e.key.toLowerCase()) {
       case "m": setMode(cycle(MODES, P.mode)); break;
@@ -589,9 +756,15 @@
             angle += (e.key === "ArrowRight" ? 1 : -1) * (Math.PI / 180) * (e.shiftKey ? 15 : 1);
         afterChange(); break;
       case "d": dice(); break;
-      case "z": undo(); break;
+      case "z": e.shiftKey ? redo() : undo(); break;
+      case "y": redo(); break;
       case "r": reset(); break;
       case "s": savePNG(); break;
+      case "c": setCompare(true); break;
+      case "l": themeBtn.click(); break;
+      case "0": zoomTo(1); break;
+      case "+": case "=": zoomTo(zoom * 1.25); break;
+      case "-": case "_": zoomTo(zoom / 1.25); break;
       default: return;
     }
     e.preventDefault();

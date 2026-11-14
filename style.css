@@ -2,10 +2,25 @@
   --bg: #0a0906;
   --fg: #f4e7b6;
   --dim: #8f8158;
+  --edge: #8f8158;                    /* button borders: a muted accent */
   --line: #e9c454;
   --accent: #ffd23f;
+  --veil: rgba(10, 9, 6, 0.85);      /* behind the info popup */
+  --shade: rgba(10, 9, 6, 0.6);      /* outline under the handle marks on the canvas */
   --font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: dark;
+}
+/* light: warm off-white with cobalt, the complement of the dark theme's yellow */
+:root[data-theme="light"] {
+  --bg: #f6f4ee;
+  --fg: #17150f;
+  --dim: #8b867a;
+  --edge: #5d70d2;
+  --line: #2440c8;
+  --accent: #2440c8;
+  --veil: rgba(246, 244, 238, 0.88);
+  --shade: rgba(246, 244, 238, 0.7);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -30,6 +45,8 @@ body { display: flex; flex-direction: column; }
 body.has-image #overlay { cursor: crosshair; }
 body.near #overlay { cursor: grab; }
 body.grabbing #overlay { cursor: grabbing; }
+body.pan #overlay { cursor: grab; }
+body.panning #overlay { cursor: grabbing; }
 
 #empty {
   position: absolute; inset: 0; width: 100%;
@@ -48,7 +65,7 @@ body.dragging #empty { color: var(--accent); }
   overflow-y: auto;
   border-top: 1px solid var(--line);
   background: var(--bg);
-  padding-block: 20px calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-block: 33px calc(16px + env(safe-area-inset-bottom, 0px));
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   display: flex;
@@ -63,7 +80,7 @@ body.dragging #empty { color: var(--accent); }
    slider cell (line + knob, label left, value right) at the same type size */
 button {
   font: inherit; color: var(--fg);
-  background: transparent; border: 1px solid var(--dim);
+  background: transparent; border: 1px solid var(--edge);
   padding: 3px 10px; cursor: pointer; letter-spacing: 0.03em;
 }
 button:hover, button:focus-visible { border-color: var(--line); color: var(--accent); outline: none; }
@@ -85,6 +102,8 @@ input[type="range"]:disabled { cursor: default; }
 .cell input { grid-column: 1 / -1; }
 .cell .name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell .val { color: var(--fg); font-variant-numeric: tabular-nums; }
+/* JetBrains Mono's ∞ at 1.5× its drawn size, centred on the middle of the digits */
+.cell .val .inf { width: 0.8em; height: 0.52em; vertical-align: 0.105em; display: inline-block; }
 
 input[type="range"] {
   -webkit-appearance: none; appearance: none;
@@ -115,7 +134,7 @@ input[type="range"]:focus-visible { outline: 1px dashed var(--dim); outline-offs
 /* the backdrop dims everything, panel included; only the info / close button stays lit */
 #info {
   position: fixed; inset: 0; z-index: 10;
-  background: rgba(10, 9, 6, 0.85);
+  background: var(--veil);
 }
 #info[hidden] { display: none; }
 #info-btn { position: relative; z-index: 11; }
@@ -163,3 +182,6 @@ input[type="range"]:focus-visible { outline: 1px dashed var(--dim); outline-offs
   #info .hatch { font-size: 1.2em; }
   #info .credit { column-span: none; }
 }
+
+/* compare: press and hold; keep the press from selecting text or opening a menu on phones */
+#compare-btn { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
